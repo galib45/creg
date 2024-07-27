@@ -1,303 +1,290 @@
 #ifndef CREG_H
 #define CREG_H
-// declarations
-#include <assert.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
-
-typedef struct Regex Regex;
-typedef struct Matches Matches;
-typedef struct Operations Operations;
-typedef struct Operation Operation;
-typedef enum Opcode Opcode;
-typedef union Operand Operand;
-
-void errmsg(const char *format, ...);
-void print_operations(Operations *ops);
-Regex* compile_regex(char *pattern);
-
-#endif // CREG_H
-#ifdef CREG_H_IMPLEMENTATION
-
-#ifndef CREG_DEBUG
-#define CREG_DEBUG true
-#endif
-
-#define COLOR_RED_BOLD "\x1b[1;31m"
-#define COLOR_GREEN_BOLD "\x1b[1;32m"
-#define COLOR_GRAY "\x1b[38;5;240m"
-#define COLOR_RESET "\x1b[0m"
-
-#define COLOR_ERROR COLOR_RED_BOLD
-#define COLOR_DEBUG COLOR_GRAY
-
-#define NOB_ASSERT assert
-#define NOB_REALLOC realloc
-#define NOB_FREE free
-#define NOB_DA_INIT_CAP 256
-#define nob_da_append(da, item)                                                          \
-    do {                                                                                 \
-        if ((da)->count >= (da)->capacity) {                                             \
-            (da)->capacity = (da)->capacity == 0 ? NOB_DA_INIT_CAP : (da)->capacity*2;   \
-            (da)->items = NOB_REALLOC((da)->items, (da)->capacity*sizeof(*(da)->items)); \
-            NOB_ASSERT((da)->items != NULL && "Buy more RAM lol");                       \
-        }                                                                                \
-                                                                                         \
-        (da)->items[(da)->count++] = (item);                                             \
-    } while (0)
-
-enum Opcode {
-	OP_CHARACTER,
-	OP_ANY_CHARACTER,
-	OP_CHOICE,
-	OP_ZERO_OR_MORE,
-};
-
-union Operand {
-	int intval;
-	char charval;
-	char *strval;
-};
-
-struct Operation {
-	Opcode opcode;
-	Operand operand;
-};
-
-struct Operations {
-	Operation *items;
-	size_t count;
-	size_t capacity;
-};
-
-struct Matches {
-	char **items;
-	size_t count;
-	size_t capacity;
-};
-
-struct Regex {
-	Operations ops;
-	Matches matches;
-};
+#include <assert.h>
 
 void errmsg(const char *format, ...) {
     va_list args;
-    
-    // Initialize variadic arguments
     va_start(args, format);
-    
-    // Print error message to stderr
-    fprintf(stderr, COLOR_ERROR "[ERROR] ");
+	fprintf(stderr, "[ERROR] ");
     vfprintf(stderr, format, args);
-    fprintf(stderr, "\n" COLOR_RESET);
-    
-    // Clean up variadic arguments
+	fprintf(stderr, "\n");
     va_end(args);
-    
-    // Exit with EXIT_FAILURE
     exit(EXIT_FAILURE);
 }
 
-void debug(const char *format, ...) {
-    va_list args;
-    
-    // Initialize variadic arguments
-    va_start(args, format);
-    
-    // Print error message to stderr
-    fprintf(stdout, COLOR_DEBUG);
-    vfprintf(stdout, format, args);
-    fprintf(stdout, COLOR_RESET);
-    
-    // Clean up variadic arguments
-    va_end(args);    
-}
-
-
-void push_char(char **str, char ch) {
-    if (*str == NULL) {
-        *str = malloc(sizeof(char));
-        if (*str == NULL) errmsg("Failed to allocate memory.");
-		(*str)[0] = '\0'; // Initialize as an empty string
+char* escaped_string(char *input) {
+    if (!input) return NULL;
+	char *output = malloc(strlen(input) * 2 + 1);
+	char *start = output;
+	while (*input) {
+        switch (*input) {
+            case '\\': *output++ = '\\'; *output++ = '\\'; break;
+            case '\"': *output++ = '\\'; *output++ = '\"'; break;
+            case '\n': *output++ = '\\'; *output++ = 'n'; break;
+            case '\t': *output++ = '\\'; *output++ = 't'; break;
+            default: *output++ = *input; break;
+        }
+        input++;
     }
-    
-    size_t len = strlen(*str);
-	*str = realloc(*str, sizeof(char)*(len+1));
-    (*str)[len] = ch;
-    (*str)[len + 1] = '\0'; // Null-terminate the string after adding the new character
+    *output = '\0';
+	return start;
 }
 
-void push_str(char **dest, const char *src) {
-    if (src == NULL) {
-        // Nothing to append
+// Define a generic dynamic array structure
+typedef struct {
+    void *items;
+    size_t count;
+    size_t capacity;
+} dynamic_array;
+
+// Generic function to append an item
+static inline void da_append(void *array, size_t item_size, const void *item) {
+    dynamic_array *da = (dynamic_array *)array;
+
+    // Check if resizing is needed
+    if (da->count >= da->capacity) {
+        da->capacity = da->capacity == 0 ? 4 : da->capacity * 2; 
+        void *new_items = realloc(da->items, da->capacity * item_size);
+        if (!new_items) errmsg("Failed to reallocate memory.");
+        da->items = new_items;
+    }
+    // Append the item
+    memcpy((char *)da->items + da->count * item_size, item, item_size);
+    da->count++;
+}
+
+typedef struct _Node Node;
+typedef struct _Nodelist Nodelist;
+typedef enum _Nodetype Nodetype;
+
+enum _Nodetype {
+	NODE_CONCAT, NODE_ALTERN, NODE_STAR,
+	NODE_CHARACTER, NODE_ANY_CHARACTER,
+};
+
+struct _Nodelist {
+	Node *items;
+	size_t count;
+	size_t capacity;
+};
+
+struct _Node {
+	Nodetype node_type;
+	union {
+		int ivalue;
+		char cvalue;
+		char *svalue;
+	};
+	Node *parent;
+	Nodelist *children;
+};
+
+Node* node_create_new(Nodetype node_type) {
+	Node *node = malloc(sizeof(Node));
+	if (!node) errmsg("Failed to allocate memory.");
+	node->node_type = node_type;
+	node->ivalue = 0;
+	node->cvalue = '\0';
+	node->svalue = NULL;
+	node->parent = NULL;
+	node->children = NULL;
+	return node;
+}
+
+void node_add_child(Node *node, Node *child) {
+	if (!child) return;
+	if (!node->children) {
+		node->children = malloc(sizeof(Nodelist));
+		if (!node->children) errmsg("Failed to allocate memory.");
+		node->children->items = NULL;
+		node->children->count = 0;
+		node->children->capacity = 0;
+	}
+	child->parent = node;
+	da_append(node->children, sizeof(Node), child);
+}
+
+Node* node_last_child(Node *node) {
+	if (node->children && node->children->items && node->children->count > 0) {
+		return &((Node *)node->children->items)[node->children->count - 1];
+	}
+	return NULL;
+}
+
+Node* node_pop(Node *node) {
+	if (node->children && node->children->items && node->children->count > 0) {
+		Node *last_child = &((Node *)node->children->items)[node->children->count - 1];
+		node->children->count--;
+		return last_child;
+	}
+	return NULL;
+}
+
+void node_free(Node *node) {
+    if (node == NULL) return;
+    if (node->svalue != NULL) free(node->svalue);
+    
+    if (node->children != NULL) {
+        if (node->children->items != NULL) {
+			for (size_t i = 0; i < node->children->count; ++i) {
+				Node *child = &((Node *)node->children->items)[i];
+				node_free(child);
+			}
+			free(node->children->items);
+		}
+        free(node->children);
+    }
+	
+	free(node);
+}
+
+// Function to print a node
+void node_print(const Node *node, int depth) {
+    if (node == NULL) {
+        fprintf(stderr, "Error: Null node pointer.\n");
         return;
     }
 
-    if (*dest == NULL) {
-        *dest = malloc(sizeof(char) * (strlen(src) + 1));
-        if (*dest == NULL) errmsg("Failed to reallocate memory.");
-        strcpy(*dest, src);
-    } else {
-        size_t dest_len = strlen(*dest);
-        size_t src_len = strlen(src);
-        
-        char *new_dest = realloc(*dest, sizeof(char) * (dest_len + src_len + 1));
-        if (new_dest == NULL) errmsg("Failed to reallocate memory.");
-        *dest = new_dest;
-        strcpy(*dest + dest_len, src);
+    // Print indentation for readability
+    for (int i = 0; i < depth; ++i) {
+        fprintf(stdout, "  ");
+    }
+
+    // Print node type
+    switch (node->node_type) {
+        case NODE_CONCAT: fprintf(stdout, "CONCAT\n"); break;
+        case NODE_ALTERN: fprintf(stdout, "ALTERN\n"); break;
+        case NODE_STAR: fprintf(stdout, "STAR\n"); break;
+        case NODE_ANY_CHARACTER: fprintf(stdout, "ANY_CHARACTER\n"); break;
+        case NODE_CHARACTER: fprintf(stdout, "CHARACTER, '%c'\n", node->cvalue); break;
+        default: fprintf(stdout, "Node Type: UNKNOWN\n"); break;
+    }
+    // Print children nodes, if any
+    if (node->children != NULL && node->children->items != NULL) {
+        for (size_t i = 0; i < node->children->count; ++i) {
+            Node *child = &((Node *)node->children->items)[i];
+            node_print(child, depth + 1);
+        }
     }
 }
 
-void reset_str(char **str) {
-	if (*str != NULL) {
-		free(*str);
-		*str = NULL;
-	}
-}
+// Function to print DOT format for a node
+void node_print_dot(const Node *node, FILE *file) {
+    if (node == NULL) return;
+    if (file == NULL) return;
 
-void print_operations(Operations *ops) {
-	for (size_t i = 0; i < ops->count; i++) {
-		Operation op = ops->items[i];
-		debug("Operation(");
-		switch(op.opcode) {
-			case OP_CHARACTER: debug("OP_CHARACTER, %c", op.operand.charval); break;
-			case OP_ANY_CHARACTER: debug("OP_ANY_CHARACTER"); break;
-			case OP_CHOICE: debug("OP_CHOICE, %s", op.operand.strval); break;
-			case OP_ZERO_OR_MORE: debug("OP_ZERO_OR_MORE"); break;
-			default: errmsg("Unknown opcode.");
+    // Print current node
+    fprintf(file, "  node%p [fontname=\"Iosevka NF\" label=\"", (void*)node);
+    switch (node->node_type) {
+        case NODE_CONCAT: fprintf(file, "CONCAT"); break;
+        case NODE_ALTERN: fprintf(file, "ALTERN"); break;
+        case NODE_STAR: fprintf(file, "STAR"); break;
+        case NODE_ANY_CHARACTER: fprintf(file, "ANY_CHAR"); break;
+        case NODE_CHARACTER: 
+			char *str = malloc(2); str[0] = node->cvalue; str[1] = '\0';
+			fprintf(file, "CHAR, '%s'", escaped_string(str)); break;
+        default: fprintf(file, "UNKNOWN"); break;
+    }
+    fprintf(file, "\"];\n");
+
+	// Print children nodes, if any
+    if (node->children != NULL && node->children->items != NULL) {
+		for (size_t i = 0; i < node->children->count; ++i) {
+            Node *child = &((Node *)node->children->items)[i];
+			fprintf(file, "  node%p -> node%p;\n", (void*)node, (void*)child);
+			node_print_dot(child, file);
 		}
-		debug(")\n");
 	}
+	
 }
 
-Regex* compile_regex(char *pattern) {
-	size_t counter = 0;
-	Regex *regex = malloc(sizeof(Regex));
-	size_t length = strlen(pattern);
-	if (length == 0) errmsg("Empty pattern.");
-	if (CREG_DEBUG) debug("Pattern: \"%s\"\n", pattern);
-	char ch; Operation op;
-	while(counter < length) {
-		ch = pattern[counter++];
+Node* parse_regex(char *pattern, size_t *index) {
+	if (*pattern == '\0') return NULL;
+	Node *root = node_create_new(NODE_CONCAT);
+	Node *current_root = root;
+	Node *temp = NULL; 
+	char ch; size_t length = strlen(pattern);
+	bool is_escaping = false;
+	while(*index < length) {
+		ch = pattern[*index];
 		switch(ch) {
-			case '.': 
-				op.opcode = OP_ANY_CHARACTER; 
-				nob_da_append(&regex->ops, op);
-				break;
-			case '[': 
-				op.opcode = OP_CHOICE; op.operand.strval = NULL;
-				size_t choice_start = counter-1; bool choice_ended = false;
-				while(ch != ']' && counter < length) {
-					ch = pattern[counter++];
-					switch(ch) {
-						case ']': 
-							choice_ended = true; 
-							nob_da_append(&regex->ops, op);
-							break;
-						case '-':
-							if (choice_start > counter-3) errmsg("Unexpected '-'.");
-							char prev = pattern[counter-2];
-							ch = pattern[counter++];
-							if (ch <= prev) errmsg("Invalid range.");
-							for (char x = prev + 1; x <= ch; x++) {
-								push_char(&op.operand.strval, x);
-							}
-							break;
-						default:
-							push_char(&op.operand.strval, ch);
-							break;
-					}
+			case '|':
+				if (!is_escaping) {
+					temp = node_create_new(NODE_ALTERN);
+					root = temp;
+					node_add_child(temp, current_root);
+					(*index)++;
+					node_add_child(temp, parse_regex(pattern, index));
+					current_root = node_last_child(temp);
+					break;
 				}
-				if (!choice_ended) errmsg("Expected ']', found %c", ch);
-				continue;
+				[[fallthrough]];
+			case '(':
+				if (!is_escaping) {
+					int depth = 1; (*index)++;
+					char *subpattern = malloc(strlen(pattern));
+					char *start = subpattern;
+					while(ch) {
+						ch = pattern[*index];
+						if (ch == ')') { 
+							depth--; if (depth == 0) break;
+						}
+						else if (ch == '(') depth++;
+						*subpattern++ = ch;
+						(*index)++;
+					}
+					if (depth != 0) errmsg("Parenthesis not closed.");
+					*subpattern = '\0';
+					subpattern = start;
+					size_t subindex = 0;
+					node_add_child(current_root, parse_regex(subpattern, &subindex));
+					break;
+				}
+				[[fallthrough]];
+			case ')':
+				if (!is_escaping) errmsg("Unexpected closing parenthesis.");	
+				[[fallthrough]];
+			case '.':
+				if (!is_escaping) {
+					temp = node_create_new(NODE_ANY_CHARACTER);
+					node_add_child(current_root, temp);
+					break;
+				}	
+				[[fallthrough]];
 			case '*':
-				op.opcode = OP_ZERO_OR_MORE;
-				nob_da_append(&regex->ops, op);
+				if (!is_escaping) {
+					temp = node_last_child(current_root);
+					node_pop(current_root);
+					Node *starnode = node_create_new(NODE_STAR);
+					node_add_child(starnode, temp);
+					node_add_child(current_root, starnode);
+					break;
+				} 
+				[[fallthrough]];
+			case '\\':
+				if (is_escaping) {
+					temp = node_create_new(NODE_CHARACTER);
+					temp->cvalue = ch;
+					node_add_child(current_root, temp);
+					is_escaping = false;
+				} else is_escaping = true;
 				break;
 			default: 
-				op.opcode = OP_CHARACTER; 
-				op.operand.charval = ch;
-				nob_da_append(&regex->ops, op);
+				if (is_escaping) errmsg("Undefined escape sequence.");
+				temp = node_create_new(NODE_CHARACTER);
+				temp->cvalue = ch;
+				node_add_child(current_root, temp);
 				break;
 		}
-		//counter++;
+		(*index)++;
 	}
-	if (CREG_DEBUG) print_operations(&regex->ops);
-	return regex;
+	return root;
 }
 
-#define reset_match 								\
-	if (success) { 									\
-		if (opcounter < oplength - 1 				\
-		&& regex->ops.items[opcounter+1].opcode == OP_ZERO_OR_MORE) {	\
-			nob_da_append(&regex->matches, strdup(match));				\
-		}											\
-		strcounter--;  								\
-	} 												\
-	success = false; 								\
-	reset_str(&match); opcounter = 0;				\
-
-void match(Regex *regex, char *string) {
-	size_t strcounter = 0, opcounter = 0;
-	size_t strlength = strlen(string);
-	if (strlength == 0) errmsg("Empty string.");
-	if (CREG_DEBUG) debug("String: \"%s\"\n", string);
-	size_t oplength = regex->ops.count;
-	char ch; Operation op;
-	char *match = NULL;
-	bool success = false, finished = false; 
-	size_t repeat = 0;
-	while (strcounter < strlength && opcounter < oplength) {
-		ch = string[strcounter++];
-		if (CREG_DEBUG) debug("string[%zu] = %c, op=%zu, ", strcounter-1, ch, opcounter);
-		op = regex->ops.items[opcounter];
-		switch(op.opcode) {
-			case OP_CHARACTER: 
-				if (!(success || opcounter == 0)) break;
-				else if (ch == op.operand.charval) {
-					push_char(&match, ch);
-					opcounter++; success = true;
-				} else { reset_match } 
-				break;
-			case OP_ANY_CHARACTER:
-				if (!(success || opcounter == 0)) break;
-				if (ch != '\n') {
-					if (!success) free(match);
-					push_char(&match, ch);
-					opcounter++; success = true;
-				} else { reset_match } 
-				break;
-			case OP_CHOICE:
-				if (!(success || opcounter == 0)) break;
-				if (strchr(op.operand.strval, ch)) {
-					push_char(&match, ch);
-					opcounter++; success = true;
-				} else { reset_match }
-				break;
-			case OP_ZERO_OR_MORE:
-				if (!(success || opcounter == 0)) break;
-				if (success) {
-					repeat++; opcounter--; strcounter--; 
-				} else { reset_match }
-				break;
-			default: errmsg("Unknown opcode.");
-		}
-		if (CREG_DEBUG) debug("success=%s, repeat=%zu, match=%s\n", success?"true":"false", repeat, match);
-		if (success && opcounter == oplength) finished = true;
-		// else if (opcounter == oplength - 1) {
-		// 	if (regex->ops.items[opcounter].opcode == OP_ZERO_OR_MORE) finished = true;
-		// }
-		if (finished) {
-			opcounter = 0; success = false; finished = false; 
-			nob_da_append(&regex->matches, strdup(match)); 
-			reset_str(&match); 
-		}
-	}
-	if (success) nob_da_append(&regex->matches, strdup(match));
-}
-
-#endif // CREG_H_IMPLEMENTATION
+#endif // CREG_H
